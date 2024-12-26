@@ -1352,7 +1352,7 @@ class FunctionDefinition:
         self.kwdefaults = kwdefaults
         self.closure = closure
         self.paramobjs = paramobjs if paramobjs else {}
-        self.annotations = annotations if annotations else []
+        self.annotations = annotations if annotations else None
 
     def is_coroutine(self):
         return self.code.code_obj.co_flags & 0x100
@@ -3021,10 +3021,7 @@ class SuiteDecompiler:
         # if end_addr.opcode == RETURN_VALUE:
         #     return end_addr[2]
         right = self.stack.pop()
-        if isinstance(right, PyCompare) and right.extends(left):
-            py_and = left.chain(right)
-        else:
-            py_and = PyBooleanAnd(left, right)
+        py_and = PyBooleanAnd(left, right)
         self.stack.push(py_and)
         return end_addr
 
