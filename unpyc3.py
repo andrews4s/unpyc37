@@ -357,6 +357,9 @@ class CodeFlags(object):
     def async_generator(self):
         return self.flags & 0x200
 
+    @property
+    def future_annotations(self):
+        return self.flags & 0x100000
 
 class Code:
     def __init__(self, code_obj, parent=None):
@@ -2483,8 +2486,9 @@ class SuiteDecompiler:
 
     def ROT_TWO(self, addr: Address):
         # special case: x, y = z, t
-
-        if addr[-1].opcode in (LOAD_ATTR, LOAD_GLOBAL, LOAD_NAME, LOAD_CONST, LOAD_FAST, LOAD_DEREF, BINARY_SUBSCR, BUILD_LIST, CALL_FUNCTION):
+        EXPR_OPC = (LOAD_ATTR, LOAD_GLOBAL, LOAD_NAME, LOAD_CONST, LOAD_FAST, LOAD_DEREF, BINARY_SUBSCR, BUILD_LIST, CALL_FUNCTION, BINARY_SUBTRACT, BINARY_ADD, BINARY_MULTIPLY, BINARY_TRUE_DIVIDE, BINARY_MODULO, BINARY_OR, BINARY_XOR, BINARY_AND, BINARY_FLOOR_DIVIDE, BINARY_MATRIX_MULTIPLY, BINARY_LSHIFT, BINARY_RSHIFT, COMPARE_OP, UNARY_NEGATIVE, BINARY_POWER, UNARY_INVERT, UNARY_POSITIVE, UNARY_NOT)
+        #if addr[-1].opcode in (LOAD_ATTR, LOAD_GLOBAL, LOAD_NAME, LOAD_CONST, LOAD_FAST, LOAD_DEREF, BINARY_SUBSCR, BUILD_LIST, CALL_FUNCTION):
+        if addr[-1].opcode in EXPR_OPC:
             next_stmt = addr.seek_forward((*unpack_terminators, *pop_jump_if_opcodes, *else_jump_opcodes))
             if next_stmt is None or next_stmt > self.end_block:
                 next_stmt = self.end_addr
@@ -3018,8 +3022,6 @@ class SuiteDecompiler:
         left = self.pop_popjump()
         d = SuiteDecompiler(addr[1], end_addr, self.stack)
         d.run()
-        # if end_addr.opcode == RETURN_VALUE:
-        #     return end_addr[2]
         right = self.stack.pop()
         py_and = PyBooleanAnd(left, right)
         self.stack.push(py_and)
@@ -3722,17 +3724,18 @@ class SuiteDecompiler:
         if argc & 8:
             annotations = list(self.stack.pop())
         if argc & 4:
-            #paramobjs = self.stack.pop()
-            #if isinstance(paramobjs, PyDict):
-                #paramobjs = {str(k[0].val).replace('\'', ''): str(k[1]) for k in paramobjs.items}
             p = self.stack.pop()
             if isinstance(p, PyDict):
-                for nm,an in p.items:
-                    nm = str(nm.val).replace('\'', '')
-                    if isinstance(an, PyConst) and isinstance(an.val, str):
-                        paramobjs[nm] = an.val
-                    else:
-                        paramobjs[nm] = str(an)
+                if self.code.flags.future_annotations:
+                    for nm,an in p.items:
+                        nm = str(nm.val).replace('\'', '')
+                        if isinstance(an, PyConst) and isinstance(an.val, str):
+                            paramobjs[nm] = an.val
+                            trace('&& '+repr(paramobjs[nm])+','+str(paramobjs[nm].__class__.__name__))
+                        else:
+                            paramobjs[nm] = str(an)
+                else:
+                    paramobjs = {str(k[0].val).replace('\'', ''): str(k[1]) for k in p.items}
             else:
                 paramobjs = p
         if argc & 2:
