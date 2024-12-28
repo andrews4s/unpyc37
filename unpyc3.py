@@ -307,10 +307,10 @@ def SPyNot(o):
     if isinstance(o, PyNot):
         return o.operand
     elif isinstance(o, PyBooleanAnd):
-        if o.allowCollision:
+        if o.allow_collision:
             return PyBooleanOr(SPyNot(o.left), SPyNot(o.right), True)
     elif isinstance(o, PyBooleanOr):
-        if o.allowCollision:
+        if o.allow_collision:
             return PyBooleanAnd(SPyNot(o.left), SPyNot(o.right), True)
     return PyNot(o)
 
@@ -404,14 +404,7 @@ class Code:
                 self.linemap.append(curinstr)
                 self.lineno.append(curlineno)
             i = i + 2
-        self.linemap = tuple(self.linemap)
-        self.lineno = tuple(self.lineno)
         self.find_jumps()
-        self.start_chained_jumps = tuple(self.start_chained_jumps)
-        self.inner_chained_jumps = tuple(self.inner_chained_jumps)
-        self.end_chained_jumps = tuple(self.end_chained_jumps)
-        #self.statement_jumps = tuple(self.statement_jumps)
-        self.ternaryop_jumps = tuple(self.ternaryop_jumps)
         self.flags: CodeFlags = CodeFlags(code_obj.co_flags)
         self.annotations = None#parent code sends these names when MAKE_FUNCTION has flag 8
 
@@ -1253,35 +1246,35 @@ class PyBooleanAnd(PyBinaryOp):
     precedence = 4
     pattern = "{} and {}"
 
-    def __init__(self, left, right, allowCollision = None):
+    def __init__(self, left, right, allow_collision = None):
         super().__init__(left, right)
-        if allowCollision is None:
-            self.allowCollision = False
+        if allow_collision is None:
+            self.allow_collision = False
             if isinstance(left, PyNot):
                 if not(isinstance(right, PyCompare) and right.complist[1].startswith('is')):
-                    self.allowCollision = True
+                    self.allow_collision = True
             elif isinstance(right, PyNot):
                 if not(isinstance(left, PyCompare) and left.complist[1].startswith('is')):
-                    self.allowCollision = True
+                    self.allow_collision = True
         else:
-            self.allowCollision = allowCollision
+            self.allow_collision = allow_collision
 
 class PyBooleanOr(PyBinaryOp):
     precedence = 3
     pattern = "{} or {}"
 
-    def __init__(self, left, right, allowCollision = None):
+    def __init__(self, left, right, allow_collision = None):
         super().__init__(left, right)
-        if allowCollision is None:
-            self.allowCollision = False
+        if allow_collision is None:
+            self.allow_collision = False
             if isinstance(left, PyNot):
                 if not(isinstance(right, PyCompare) and right.complist[1].startswith('is')):
-                    self.allowCollision = True
+                    self.allow_collision = True
             elif isinstance(right, PyNot):
                 if not(isinstance(left, PyCompare) and left.complist[1].startswith('is')):
-                    self.allowCollision = True
+                    self.allow_collision = True
         else:
-            self.allowCollision = allowCollision
+            self.allow_collision = allow_collision
 
 class PyIfElse(PyExpr):
     precedence = 2
@@ -1309,11 +1302,12 @@ class PyAttribute(PyExpr):
     def __str__(self):
         expr_str = self.expr.wrap(self.expr.precedence < self.precedence)
         attrname = self.attrname
-
-        if isinstance(self.expr, PyName) and self.expr.name == 'self':
-            __ = attrname.name.find('__')
-            if __ > 0:
-                attrname = PyName(self.attrname.name[__:])
+        #Incorrect restoring private names. This irresponsible transformation of names affects all names.
+        #Unnecessary restoration should be inside class Code
+        #if isinstance(self.expr, PyName) and self.expr.name == 'self':
+            #__ = attrname.name.find('__')
+            #if __ > 0:
+                #attrname = PyName(self.attrname.name[__:])
         return "{}.{}".format(expr_str, attrname)
 
 
@@ -2016,7 +2010,7 @@ class SuiteDecompiler:
             next_addr = original_jaddr[1]
         while stack:
             truthiness, addr, cond, original_addr = stack[-1]
-            allowCollision = False
+            allow_collision = False
             if jaddr == addr:
                 stack.pop()
                 if truthiness and jtruthiness:
@@ -2029,7 +2023,7 @@ class SuiteDecompiler:
                     else:
                         obj_maker = PyBooleanAnd
                         cond = SPyNot(cond)
-                        allowCollision = True
+                        allow_collision = True
                 elif not truthiness and jtruthiness:
                     if isinstance(jcond, PyCompare) and jcond.complist[1].startswith('is'):
                         obj_maker = PyBooleanOr
@@ -2038,7 +2032,7 @@ class SuiteDecompiler:
                         obj_maker = PyBooleanAnd
                         jcond = SPyNot(jcond)
                         jtruthiness = False
-                        allowCollision = True
+                        allow_collision = True
                 else:
                     obj_maker = PyBooleanAnd
             elif addr == next_addr:
@@ -2052,7 +2046,7 @@ class SuiteDecompiler:
                         obj_maker = PyBooleanOr
                         jcond = SPyNot(jcond)
                         jtruthiness = False
-                        allowCollision = True
+                        allow_collision = True
                 elif truthiness and not jtruthiness:
                     obj_maker = PyBooleanOr
                 elif not truthiness and jtruthiness:
@@ -2065,7 +2059,7 @@ class SuiteDecompiler:
                     else:
                         obj_maker = PyBooleanOr
                         cond = SPyNot(cond)
-                        allowCollision = True
+                        allow_collision = True
             else:
                 break
             
@@ -2075,9 +2069,9 @@ class SuiteDecompiler:
             if isinstance(jcond, obj_maker):
                 # Use associativity of 'and' and 'or' to minimise the
                 # number of parentheses
-                jcond = obj_maker(obj_maker(cond, jcond.left, allowCollision), jcond.right, allowCollision)
+                jcond = obj_maker(obj_maker(cond, jcond.left, allow_collision), jcond.right, allow_collision)
             else:
-                jcond = obj_maker(cond, jcond, allowCollision)
+                jcond = obj_maker(cond, jcond, allow_collision)
         if original_jaddr.opcode == JUMP_IF_TRUE_OR_POP:
             jtruthiness = not jtruthiness
         stack.append((jtruthiness, jaddr, jcond, original_jaddr))
@@ -3731,7 +3725,6 @@ class SuiteDecompiler:
                         nm = str(nm.val).replace('\'', '')
                         if isinstance(an, PyConst) and isinstance(an.val, str):
                             paramobjs[nm] = an.val
-                            trace('&& '+repr(paramobjs[nm])+','+str(paramobjs[nm].__class__.__name__))
                         else:
                             paramobjs[nm] = str(an)
                 else:
