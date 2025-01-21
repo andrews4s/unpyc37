@@ -36,11 +36,26 @@ def get_trace():
     global current_trace
     return None if current_trace == _trace else current_trace
 
+def trace_item(arg):
+    if hasattr(arg, 'trace'):
+        tstr = arg.trace()
+        if isinstance(tstr, str):
+            return arg.__class__.__name__+'['+tstr+']'
+        return arg.__class__.__name__ + '[' + ','.join(p + '=' + trace_item(getattr(arg, p)) for p in tstr) + ']'
+    if isinstance(arg, list):
+        return 'list[' + ','.join(trace_item(p) for p in arg) + ']'
+    if isinstance(arg, tuple):
+        return 'tuple(' + ','.join(trace_item(p) for p in arg) + ')'
+    if isinstance(arg, map):
+        return 'map{' + ','.join(trace_item(p) for p in arg) + '}'
+    if isinstance(arg, dict):
+        return 'dict{' + ','.join(trace_item(p[0]) + ':' + trace_item(p[1]) for p in arg.items()) + '}'
+    return str(arg)
 
 def trace(*args):
     global current_trace
     if current_trace:
-        current_trace(*args)
+        current_trace(''.join(trace_item(arg) for arg in args))
 
 
 def _trace(*args):
@@ -756,20 +771,6 @@ class Code:
 
     def get_suite(self, include_declarations=True, look_for_docstring=False) -> Suite:
         dec = SuiteDecompiler(self[0])
-        trace('\nname = '+self.name)
-        ts = ''
-        for g in self.instr_seq:
-            aop,aarg = g[1]
-            if g[0] in self.linemap:
-                ts = ts + '\n'+str(self.lineno[self.linemap.index(g[0])])+': '
-            ts = ts + (' '+str(g[0])+': '+opname[aop]+'('+str(aarg)+'), ')
-        trace(ts)
-        trace('\nstatement_jumps:')
-        for ttt in self.statement_jumps:
-            trace(ttt)
-        trace('\nternaryop_jumps:')
-        for ttt in self.ternaryop_jumps:
-            trace(ttt)
         dec.run()
         first_stmt = dec.suite and dec.suite[0]
         # Change __doc__ = "docstring" to "docstring"
@@ -1045,6 +1046,8 @@ class PyConst(PyExpr):
     def __eq__(self, other):
         return isinstance(other, PyConst) and self.val == other.val
 
+    def trace(self):
+        return ('val',)
 
 class PyFormatValue(PyConst):
     def __init__(self, val):
@@ -1061,6 +1064,9 @@ class PyFormatValue(PyConst):
     def __str__(self):
         return self.fmt(self.base())
 
+    def trace(self):
+        return ('formatter',)
+
 class PyFormatString(PyExpr):
     precedence = 100
 
@@ -1076,6 +1082,8 @@ class PyFormatString(PyExpr):
             for p in self.params])
         )
 
+    def trace(self):
+        return ('params',)
 
 class PyTuple(PyExpr):
     precedence = 0
@@ -1099,6 +1107,8 @@ class PyTuple(PyExpr):
     def wrap(self, condition=True):
         return str(self)
 
+    def trace(self):
+        return ','.join(map(trace_item, self.values))
 
 class PyList(PyExpr):
     precedence = 16
@@ -1114,6 +1124,8 @@ class PyList(PyExpr):
     def __iter__(self):
         return iter(self.values)
 
+    def trace(self):
+        return ','.join(map(trace_item, self.values))
 
 class PySet(PyExpr):
     precedence = 16
@@ -1129,6 +1141,8 @@ class PySet(PyExpr):
     def __iter__(self):
         return iter(self.values)
 
+    def trace(self):
+        return ','.join(map(trace_item, self.values))
 
 class PyDict(PyExpr):
     precedence = 16
@@ -1143,6 +1157,8 @@ class PyDict(PyExpr):
         itemstr = ", ".join(f"{kv[0]}: {kv[1]}" if len(kv) == 2 else str(kv[0]) for kv in self.items)
         return f"{{{itemstr}}}"
 
+    def trace(self):
+        return ','.join(trace_item(item[0]) + ':' + trace_item(item[1]) for item in self.items)
 
 class PyName(PyExpr,AwaitableMixin):
     precedence = 100
@@ -1157,6 +1173,8 @@ class PyName(PyExpr,AwaitableMixin):
     def __eq__(self, other):
         return isinstance(other, type(self)) and self.name == other.name
 
+    def trace(self):
+        return ('name',)
 
 class PyUnaryOp(PyExpr):
     def __init__(self, operand):
@@ -1170,6 +1188,8 @@ class PyUnaryOp(PyExpr):
     def instr(cls, stack):
         stack.push(cls(stack.pop()))
 
+    def trace(self):
+        return ('operand',)
 
 class PyBinaryOp(PyExpr):
     def __init__(self, left, right):
@@ -1191,6 +1211,8 @@ class PyBinaryOp(PyExpr):
         left = stack.pop()
         stack.push(cls(left, right))
 
+    def trace(self):
+        return ('left', 'right')
 
 class PySubscript(PyBinaryOp):
     precedence = 15
@@ -1221,6 +1243,8 @@ class PySlice(PyExpr):
         else:
             return "{}:{}:{}".format(self.start, self.stop, self.step)
 
+    def trace(self):
+        return ('start', 'stop', 'step')
 
 class PyCompare(PyExpr):
     precedence = 6
@@ -1241,6 +1265,8 @@ class PyCompare(PyExpr):
     def chain(self, other):
         return PyCompare(self.complist + other.complist[1:])
 
+    def trace(self):
+        return ('complist',)
 
 class PyBooleanAnd(PyBinaryOp):
     precedence = 4
@@ -1259,6 +1285,9 @@ class PyBooleanAnd(PyBinaryOp):
         else:
             self.allow_collision = allow_collision
 
+    def trace(self):
+        return ('allow_collision', 'left', 'right')
+
 class PyBooleanOr(PyBinaryOp):
     precedence = 3
     pattern = "{} or {}"
@@ -1276,6 +1305,9 @@ class PyBooleanOr(PyBinaryOp):
         else:
             self.allow_collision = allow_collision
 
+    def trace(self):
+        return ('allow_collision', 'left', 'right')
+
 class PyIfElse(PyExpr):
     precedence = 2
 
@@ -1291,6 +1323,8 @@ class PyIfElse(PyExpr):
         false_str = self.false_expr.wrap(self.false_expr.precedence < p)
         return "{} if {} else {}".format(true_str, cond_str, false_str)
 
+    def trace(self):
+        return ('cond', 'true_expr', 'false_expr')
 
 class PyAttribute(PyExpr):
     precedence = 15
@@ -1310,6 +1344,8 @@ class PyAttribute(PyExpr):
                 #attrname = PyName(self.attrname.name[__:])
         return "{}.{}".format(expr_str, attrname)
 
+    def trace(self):
+        return ('expr', 'attrname')
 
 class PyCallFunction(PyExpr, AwaitableMixin):
     precedence = 15
@@ -1337,10 +1373,21 @@ class PyCallFunction(PyExpr, AwaitableMixin):
         args.extend("{}={}".format(str(k).replace('\'', ''), v.wrap(v.precedence <= 0))
                     for k, v in self.kwargs)
         if self.varkw is not None:
+            flag = self.varargs is not None or len(self.varkw) > 1
             for varkw in self.varkw:
-                args.append("**{}".format(varkw))
+                if flag and isinstance(varkw, PyDict) and\
+                    not any(filter(lambda kv: not isinstance(kv[0], PyConst), varkw.items)) and\
+                    not any(filter(lambda kv: '.' in str(kv[0].val), varkw.items)):
+                        args.extend("{}={}".format(str(k).replace('\'', ''), v.wrap(v.precedence <= 0))
+                                for k, v in varkw.items)
+                        flag = False
+                else:
+                    args.append("**{}".format(varkw))
+                    flag = True
         return "{}{}({})".format(self.await_prefix, funcstr, ", ".join(args))
 
+    def trace(self):
+        return ('func', 'args', 'kwargs', 'varargs', 'varkw')
 
 class FunctionDefinition:
     def __init__(self, code: Code, defaults, kwdefaults, closure, paramobjs=None, annotations=None):
@@ -1398,7 +1445,6 @@ class FunctionDefinition:
                 params.append(f'**{name}:{str(self.paramobjs[name])}')
             else:
                 params.append(f'**{name}')
-
         return params
 
     def getreturn(self):
@@ -1434,6 +1480,8 @@ class PyLambda(PyExpr, FunctionDefinition):
             expr = "None"
         return "lambda {}: {}".format(params, expr)
 
+    def trace(self):
+        return ('code', 'defaults', 'kwdefaults', 'closure', 'paramobjs', 'annotations')
 
 class PyComp(PyExpr):
     """
@@ -1456,6 +1504,8 @@ class PyComp(PyExpr):
         suite = self.code.get_suite()
         return self.pattern.format(suite.gen_display())
 
+    def trace(self):
+        return ('code', 'annotations')
 
 class PyListComp(PyComp):
     pattern = "[{}]"
@@ -1482,6 +1532,8 @@ class PyGenExpr(PyComp):
     def __init__(self, code, defaults, kwdefaults, closure, paramobjs={}, annotations=[]):
         self.code = code
 
+    def trace(self):
+        return ('code',)
 
 class PyYield(PyExpr):
     precedence = 0
@@ -1492,6 +1544,8 @@ class PyYield(PyExpr):
     def __str__(self):
         return "(yield {})".format(self.value)
 
+    def trace(self):
+        return ('value',)
 
 class PyYieldFrom(PyExpr):
     precedence = 0
@@ -1502,6 +1556,8 @@ class PyYieldFrom(PyExpr):
     def __str__(self):
         return "(yield from {})".format(self.value)
 
+    def trace(self):
+        return ('value',)
 
 class PyStarred(PyExpr):
     """Used in unpacking assigments"""
@@ -1514,6 +1570,8 @@ class PyStarred(PyExpr):
         es = self.expr.wrap(self.expr.precedence < self.precedence)
         return "*{}".format(es)
 
+    def trace(self):
+        return ('expr',)
 
 code_map = {
     '<lambda>': PyLambda,
@@ -1584,6 +1642,8 @@ class DocString(PyStatement):
             docstring = "{0}{1}{0}".format(fence, text)
             indent.write(docstring)
 
+    def trace(self):
+        return ('string',)
 
 class AssignStatement(PyStatement):
     def __init__(self, chain):
@@ -1592,6 +1652,8 @@ class AssignStatement(PyStatement):
     def display(self, indent):
         indent.write(" = ".join(map(str, self.chain)))
 
+    def trace(self):
+        return ('chain',)
 
 class InPlaceOp(PyStatement):
     def __init__(self, left, right):
@@ -1611,6 +1673,8 @@ class InPlaceOp(PyStatement):
         left = stack.pop()
         stack.push(cls(left, right))
 
+    def trace(self):
+        return ('right', 'left')
 
 class Unpack:
     precedence = 50
@@ -1629,6 +1693,8 @@ class Unpack:
             dec.stack.push(self.val)
             dec.store(PyTuple(self.dests))
 
+    def trace(self):
+        return ('val', 'length', 'star_index', 'dests')
 
 class ImportStatement(PyStatement):
     alias = ""
@@ -1667,6 +1733,8 @@ class ImportStatement(PyStatement):
                     names.append("{} as {}".format(name, alias))
             indent.write("from {}{} import {}", ''.rjust(self.level.val,'.'), self.name, ", ".join(names))
 
+    def trace(self):
+        return ('name', 'alias', 'level', 'fromlist', 'aslist')
 
 class ImportFrom:
     def __init__(self, name):
@@ -1682,6 +1750,8 @@ class ImportFrom:
         else:
             imp.alias = dest
 
+    def trace(self):
+        return ('name',)
 
 class SimpleStatement(PyStatement):
     def __init__(self, val):
@@ -1694,6 +1764,8 @@ class SimpleStatement(PyStatement):
     def gen_display(self, seq=()):
         return " ".join((self.val,) + seq)
 
+    def trace(self):
+        return ('val',)
 
 class IfStatement(PyStatement):
     def __init__(self, cond, true_suite, false_suite):
@@ -1731,7 +1803,6 @@ class IfStatement(PyStatement):
                 return self.false_suite.gen_display(seq + (s,))
             else:
                 raise Exception('unrecognized genexp')
-        
         if isinstance(self.cond, PyIfElse):
             s = s + "({})".format(self.cond)
         else:
@@ -1740,6 +1811,8 @@ class IfStatement(PyStatement):
             s = s + ' and'
         return self.true_suite.gen_display(seq + (s,))
 
+    def trace(self):
+        return ('cond', 'true_suite', 'false_suite')
 
 class ForStatement(PyStatement, AsyncMixin):
     def __init__(self, iterable):
@@ -1761,6 +1834,8 @@ class ForStatement(PyStatement, AsyncMixin):
         s = "{}for {} in {}".format(self.async_prefix, self.dest, self.iterable.wrap() if isinstance(self.iterable, PyIfElse) else self.iterable)
         return self.body.gen_display(seq + (s,))
 
+    def trace(self):
+        return ('iterable', 'else_body')
 
 class WhileStatement(PyStatement):
     def __init__(self, cond, body):
@@ -1775,6 +1850,8 @@ class WhileStatement(PyStatement):
             indent.write('else:')
             self.else_body.display(indent + 1)
 
+    def trace(self):
+        return ('iterable', 'else_body')
 
 class DecorableStatement(PyStatement):
     def __init__(self):
@@ -1817,6 +1894,8 @@ class DefStatement(FunctionDefinition, DecorableStatement, AsyncMixin):
         self.name = dest
         dec.suite.add_statement(self)
 
+    def trace(self):
+        return ('is_async', 'defaults', 'kwdefaults', 'closure', 'paramobjs', 'annotations', 'decorators')
 
 class TryStatement(PyStatement):
     def __init__(self, try_suite):
@@ -1898,6 +1977,8 @@ class WithStatement(PyStatement):
             indent.write(self.async_prefix + "with {}:", ", ".join(args))
             self.suite.display(indent + 1)
 
+    def trace(self):
+        return ('with_expr', 'with_name', 'is_async')
 
 class ClassStatement(DecorableStatement):
     def __init__(self, func, name, parents, kwargs):
@@ -1937,6 +2018,8 @@ class ClassStatement(DecorableStatement):
 
         suite.display(indent + 1)
 
+    def trace(self):
+        return ('name', 'func', 'parents', 'kwargs')
 
 class Suite:
     def __init__(self):
@@ -2481,7 +2564,6 @@ class SuiteDecompiler:
     def ROT_TWO(self, addr: Address):
         # special case: x, y = z, t
         EXPR_OPC = (LOAD_ATTR, LOAD_GLOBAL, LOAD_NAME, LOAD_CONST, LOAD_FAST, LOAD_DEREF, BINARY_SUBSCR, BUILD_LIST, CALL_FUNCTION, BINARY_SUBTRACT, BINARY_ADD, BINARY_MULTIPLY, BINARY_TRUE_DIVIDE, BINARY_MODULO, BINARY_OR, BINARY_XOR, BINARY_AND, BINARY_FLOOR_DIVIDE, BINARY_MATRIX_MULTIPLY, BINARY_LSHIFT, BINARY_RSHIFT, COMPARE_OP, UNARY_NEGATIVE, BINARY_POWER, UNARY_INVERT, UNARY_POSITIVE, UNARY_NOT)
-        #if addr[-1].opcode in (LOAD_ATTR, LOAD_GLOBAL, LOAD_NAME, LOAD_CONST, LOAD_FAST, LOAD_DEREF, BINARY_SUBSCR, BUILD_LIST, CALL_FUNCTION):
         if addr[-1].opcode in EXPR_OPC:
             next_stmt = addr.seek_forward((*unpack_terminators, *pop_jump_if_opcodes, *else_jump_opcodes))
             if next_stmt is None or next_stmt > self.end_block:
@@ -2822,26 +2904,21 @@ class SuiteDecompiler:
             self.CALL_FUNCTION(addr, argc, have_kw=True)
 
     def CALL_FUNCTION_EX(self, addr, flags):
-        kwarg_unpacks = []
+        kwarg_dict = PyDict()
         if flags & 1:
             kwarg_unpacks = self.stack.pop()
-
-        kwarg_dict = PyDict()
-        if isinstance(kwarg_unpacks,PyDict):
-            kwarg_dict = kwarg_unpacks
-            kwarg_unpacks = []
-        elif isinstance(kwarg_unpacks, list):
-            if len(kwarg_unpacks):
-                if isinstance(kwarg_unpacks[0], PyDict):
-                    kwarg_dict = kwarg_unpacks[0]
-                    kwarg_unpacks = kwarg_unpacks[1:]
+            if isinstance(kwarg_unpacks,PyDict):
+                #kwarg_dict = kwarg_unpacks
+                kwarg_unpacks = [kwarg_unpacks]
+            elif isinstance(kwarg_unpacks, list):
+                pass#if len(kwarg_unpacks):
+                    #if isinstance(kwarg_unpacks[0], PyDict):
+                        #kwarg_dict = kwarg_unpacks[0]
+                        #kwarg_unpacks = kwarg_unpacks[1:]
+            else:
+                kwarg_unpacks = [kwarg_unpacks]
         else:
-            kwarg_unpacks = [kwarg_unpacks]
-
-        if any(filter(lambda kv: '.' in str(kv[0]), kwarg_dict.items)):
-            kwarg_unpacks.append(kwarg_dict)
-            kwarg_dict = PyDict()
-
+            kwarg_unpacks = []
         posargs_unpacks = self.stack.pop()
         posargs = PyTuple([])
         if isinstance(posargs_unpacks,PyTuple):
