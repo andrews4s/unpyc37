@@ -422,6 +422,7 @@ class Code:
         self.find_jumps()
         self.flags: CodeFlags = CodeFlags(code_obj.co_flags)
         self.annotations = None#parent code sends these names when MAKE_FUNCTION has flag 8
+        self.implicit_continuation_lines()
 
     def __getitem__(self, instr_index):
         if 0 <= instr_index < len(self.instr_seq):
@@ -769,6 +770,24 @@ class Code:
                     jumps[addr] = jumps[jump_addr]
         self.else_jumps = set(jumps.values())
 
+    def implicit_continuation_lines(self):
+        t_mapping = {}
+        for addr in self:
+            opcode, arg = addr
+            if opcode in (STORE_GLOBAL, STORE_NAME):
+                addrc = addr[-1]
+                opcode, arg = addrc
+                if arg > 4 and opcode in (BUILD_TUPLE, BUILD_LIST, BUILD_SET, BUILD_MAP):
+                    num_lines = 0
+                    addr = addrc[-1]
+                    while addr and not addr.is_statement:
+                        if addr.addr in addr.code.linemap:
+                            num_lines += 1
+                        addr = addr[-1]
+                    if num_lines > 1:
+                        t_mapping[addrc.index] = num_lines
+        self.implicit_continuation = t_mapping
+
     def get_suite(self, include_declarations=True, look_for_docstring=False) -> Suite:
         dec = SuiteDecompiler(self[0])
         dec.run()
@@ -1088,18 +1107,27 @@ class PyFormatString(PyExpr):
 class PyTuple(PyExpr):
     precedence = 0
 
-    def __init__(self, values):
+    def __init__(self, values, num_lines = 1):
         self.values = values
+        self.num_lines = num_lines
 
     def __str__(self):
         if not self.values:
             return "()"
-        valstr = [val.wrap(val.precedence <= self.precedence)
+        valstr = [val.wrap(val.precedence <= 0)
                   for val in self.values]
-        if len(valstr) == 1:
+        lengh = len(valstr)
+        if lengh == 1:
             return '(' + valstr[0] + "," + ')'
-        else:
-            return '(' + ", ".join(valstr) + ')'
+        if self.num_lines > 1:
+            k = lengh / min(lengh, self.num_lines)
+            c = k
+            for i in range(lengh):
+                if round(c) == i:
+                    c += k
+                    trace('=')
+                    valstr[i] = '\n    ' + valstr[i]
+        return '(' + ", ".join(valstr) + ')'
 
     def __iter__(self):
         return iter(self.values)
@@ -1113,13 +1141,26 @@ class PyTuple(PyExpr):
 class PyList(PyExpr):
     precedence = 16
 
-    def __init__(self, values):
+    def __init__(self, values, num_lines = 1):
         self.values = values
+        self.num_lines = num_lines
 
     def __str__(self):
-        valstr = ", ".join(val.wrap(val.precedence <= 0)
-                           for val in self.values)
-        return "[{}]".format(valstr)
+        if not self.values:
+            return "[]"
+        valstr = [val.wrap(val.precedence <= 0)
+                  for val in self.values]
+        lengh = len(valstr)
+        k = min(lengh, self.num_lines)
+        if k > 1:
+            k = lengh / k
+            c = k
+            for i in range(lengh):
+                if round(c) == i:
+                    c += k
+                    trace('=')
+                    valstr[i] = '\n    ' + valstr[i]
+        return '[' + ", ".join(valstr) + ']'
 
     def __iter__(self):
         return iter(self.values)
@@ -1130,13 +1171,24 @@ class PyList(PyExpr):
 class PySet(PyExpr):
     precedence = 16
 
-    def __init__(self, values):
+    def __init__(self, values, num_lines = 1):
         self.values = values
+        self.num_lines = num_lines
 
     def __str__(self):
-        valstr = ", ".join(val.wrap(val.precedence <= 0)
-                           for val in self.values)
-        return "{{{}}}".format(valstr)
+        valstr = [val.wrap(val.precedence <= 0)
+                  for val in self.values]
+        lengh = len(valstr)
+        k = min(lengh, self.num_lines)
+        if k > 1:
+            k = lengh / k
+            c = k
+            for i in range(lengh):
+                if round(c) == i:
+                    c += k
+                    trace('=')
+                    valstr[i] = '\n    ' + valstr[i]
+        return '{' + ", ".join(valstr) + '}'
 
     def __iter__(self):
         return iter(self.values)
@@ -1147,15 +1199,27 @@ class PySet(PyExpr):
 class PyDict(PyExpr):
     precedence = 16
 
-    def __init__(self):
+    def __init__(self, num_lines = 1):
         self.items = []
+        self.num_lines = num_lines
 
     def set_item(self, key, val):
         self.items.append((key, val))
 
     def __str__(self):
-        itemstr = ", ".join(f"{kv[0]}: {kv[1]}" if len(kv) == 2 else str(kv[0]) for kv in self.items)
-        return f"{{{itemstr}}}"
+        if not self.items:
+            return "{}"
+        valstr = [f"{kv[0]}: {kv[1]}" if len(kv) == 2 else str(kv[0]) for kv in self.items]
+        lengh = len(valstr)
+        k = min(lengh, self.num_lines)
+        if k > 1:
+            k = lengh / k
+            c = k
+            for i in range(lengh):
+                if round(c) == i:
+                    c += k
+                    valstr[i] = '\n    ' + valstr[i]
+        return '{' + ", ".join(valstr) + '}'
 
     def trace(self):
         return ','.join(trace_item(item[0]) + ':' + trace_item(item[1]) for item in self.items)
@@ -2907,15 +2971,7 @@ class SuiteDecompiler:
         kwarg_dict = PyDict()
         if flags & 1:
             kwarg_unpacks = self.stack.pop()
-            if isinstance(kwarg_unpacks,PyDict):
-                #kwarg_dict = kwarg_unpacks
-                kwarg_unpacks = [kwarg_unpacks]
-            elif isinstance(kwarg_unpacks, list):
-                pass#if len(kwarg_unpacks):
-                    #if isinstance(kwarg_unpacks[0], PyDict):
-                        #kwarg_dict = kwarg_unpacks[0]
-                        #kwarg_unpacks = kwarg_unpacks[1:]
-            else:
+            if not isinstance(kwarg_unpacks,list):
                 kwarg_unpacks = [kwarg_unpacks]
         else:
             kwarg_unpacks = []
@@ -2966,7 +3022,8 @@ class SuiteDecompiler:
     def BUILD_TUPLE(self, addr, count):
         values = [self.stack.pop() for i in range(count)]
         values.reverse()
-        self.stack.push(PyTuple(values))
+        num_lines = self.code.implicit_continuation.get(addr.index, 1)
+        self.stack.push(PyTuple(values, num_lines))
 
     def BUILD_TUPLE_UNPACK(self, addr, count):
         values = []
@@ -2984,6 +3041,7 @@ class SuiteDecompiler:
     def BUILD_LIST(self, addr, count):
         values = [self.stack.pop() for i in range(count)]
         values.reverse()
+        num_lines = self.code.implicit_continuation.get(addr.index, 1)
         self.stack.push(PyList(values))
 
     def BUILD_LIST_UNPACK(self, addr, count):
@@ -2999,7 +3057,8 @@ class SuiteDecompiler:
     def BUILD_SET(self, addr, count):
         values = [self.stack.pop() for i in range(count)]
         values.reverse()
-        self.stack.push(PySet(values))
+        num_lines = self.code.implicit_continuation.get(addr.index, 1)
+        self.stack.push(PySet(values, num_lines))
 
     def BUILD_SET_UNPACK(self, addr, count):
         values = []
@@ -3012,7 +3071,8 @@ class SuiteDecompiler:
         self.stack.push(PySet(values))
 
     def BUILD_MAP(self, addr, count):
-        d = PyDict()
+        num_lines = self.code.implicit_continuation.get(addr.index, 1)
+        d = PyDict(num_lines)
         if sys.version_info >= (3, 5):
             for i in range(count):
                 d.items.append(tuple(self.stack.pop(2)))
@@ -3981,4 +4041,129 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         print('USAGE: {} <filename.pyc>'.format(sys.argv[0]))
     else:
-        print(decompile(sys.argv[1])) 
+        print(decompile(sys.argv[1]))
+
+import types
+
+CODE_FLAGS = (0x0001, "OPTIMIZED",
+    0x0002, "NEWLOCALS",
+    0x0004, "VARARGS (*args)",
+    0x0008, "VARKEYWORDS (**kwargs)",
+    0x0010, "NESTED",
+    0x0020, "GENERATOR",
+    0x0040, "NOFREE (no free no cell variables)",
+    0x0080, "COROUTINE (async def)",
+    0x0100, "ITERABLE_COROUTINE (yield val)",
+    0x0200, "ASYNC_GENERATOR (async def)",
+    0x1000, "GENERATOR_ALLOWED",
+    0x2000, "FUTURE_DIVISION",
+    0x4000, "FUTURE_ABSOLUTE_IMPORT",
+    0x8000, "FUTURE_WITH_STATEMENT",
+    0x10000, "FUTURE_PRINT_FUNCTION",
+    0x20000, "FUTURE_UNICODE_LITERALS",
+    0x40000, "FUTURE_BARRY_AS_BDFL",
+    0x80000, "FUTURE_GENERATOR_STOP",
+    0x100000, "FUTURE_ANNOTATIONS")
+def remove_arg(s):
+    ix = s.find('(')
+    if ix <= 0:
+        return s
+    return s[:ix]
+
+def compare_codeobjs(code_obj_expected, code_obj_tested):
+    err_level = 0
+    err_str = ''
+    t_err_str = ''
+    if code_obj_expected.co_flags != code_obj_tested.co_flags:
+        t_err_str = 'Differings flags: {} != {}\nExpected:'.format(code_obj_expected.co_flags, code_obj_tested.co_flags)
+        tst = 'Tested: '
+        for i in range(0, len(CODE_FLAGS), 2):
+            v = CODE_FLAGS[i]
+            if (code_obj_expected.co_flags&v) != ode_obj_tested.co_flags&v:
+                if (code_obj_expected.co_flags&v):
+                    t_err_str += CODE_FLAGS[i+1] + ' '
+                else:
+                    tst += CODE_FLAGS[i+1] + ' '
+        t_err_str += '\n' + tst + '\n'
+    if code_obj_expected.co_kwonlyargcount != code_obj_tested.co_kwonlyargcount:
+        t_err_str += 'Differing kwonlyargcount: ' + str(code_obj_expected.co_kwonlyargcount) + ' != ' + str(code_obj_tested.co_kwonlyargcount) + '\n'
+    if code_obj_expected.co_argcount != code_obj_tested.co_argcount:
+        t_err_str += 'Differing argcount: ' + str(code_obj_expected.co_argcount) + ' != ' + str(code_obj_tested.co_argcount) + '\n'
+    if len(code_obj_tested.co_names) != len(code_obj_expected.co_names):
+        t_err_str += 'Differing number of global names: ' + str(len(code_obj_expected.co_names)) + ' != ' + str(len(code_obj_tested.co_names)) + '\n'
+        t_err_str +=  '\tExpected: {}\n\tActual:   {}\n'.format(code_obj_expected.co_names, code_obj_tested.co_names)
+    else:
+        for i in range(len(code_obj_expected.co_names)):
+            if code_obj_expected.co_names[i] != code_obj_tested.co_names[i]:
+                t_err_str +=  'Global name: {} != {}\n'.format(code_obj_expected.co_names[i], code_obj_tested.co_names[i])
+    if len(code_obj_tested.co_consts) != len(code_obj_expected.co_consts):
+        t_err_str += 'Differing number of constants: {} != {}\n'.format(len(code_obj_expected.co_consts), len(code_obj_tested.co_consts))
+        t_err_str +=  '\tExpected: {}\n\tActual:   {}\n'.format(code_obj_expected.co_consts, code_obj_tested.co_consts)
+        i = 0
+        im = len(code_obj_expected.co_consts)
+        j = i
+        jm = len(code_obj_tested.co_consts)
+        while i < im and j < jm:
+            if type(code_obj_expected.co_consts[i]) is types.CodeType:
+                while j < jm and type(code_obj_tested.co_consts[j]) is not types.CodeType:
+                    j += 1
+                if j < jm:
+                    err_str += compare_codeobjs(code_obj_expected.co_consts[i], code_obj_tested.co_consts[j])
+            elif type(code_obj_tested.co_consts[j]) is types.CodeType:
+                while i < im and type(code_obj_expected.co_consts[i]) is not types.CodeType:
+                    i += 1
+                if i < im:
+                    err_str += compare_codeobjs(code_obj_expected.co_consts[i], code_obj_tested.co_consts[j])
+            i += 1
+            j += 1
+    else:
+        for i in range(len(code_obj_expected.co_consts)):
+            constant = code_obj_expected.co_consts[i]
+            if type(constant) is types.CodeType:
+                if type(code_obj_tested.co_consts[i]) is types.CodeType:
+                    err_str += compare_codeobjs(constant, code_obj_tested.co_consts[i])
+                else:
+                    t_err_str += 'Constants mismatched: unable to compare code object {} to non-code object {}\n'.format(constant, code_obj_tested.co_consts[i])
+            elif constant != code_obj_tested.co_consts[i]:
+                t_err_str +=  'Constant: {} != {}\n'.format(constant, code_obj_tested.co_consts[i])
+            idxc += 1
+    if code_obj_tested.co_nlocals != code_obj_expected.co_nlocals:
+        t_err_str += 'Differing number of locals: {} != {}\n'.format(code_obj_expected.co_nlocals, code_obj_tested.co_nlocals)
+        t_err_str +=  '\tExpected: {}\n\tActual:   {}\n'.format(code_obj_expected.co_varnames, code_obj_tested.co_varnames)
+    else:
+        idxc = 0
+        # Compare all local names to ensure equality
+        for name in code_obj_expected.co_varnames:
+            if code_obj_tested.co_nlocals < idxc + 1:
+                t_err_str +=  'Unable to compare local var name {}. Does not exist in the decompiled version\n'.format(constant)
+            elif name != code_obj_tested.co_varnames[idxc]:
+                t_err_str +=  'Local var name: {} != {}\n'.format(name, code_obj_tested.co_varnames[idxc])
+            idxc += 1
+    if len(code_obj_tested.co_cellvars) != len(code_obj_expected.co_cellvars):
+        t_err_str += 'Differing number of cellvars: {} != {}\n'.format(len(code_obj_expected.co_cellvars), len(code_obj_tested.co_cellvars))
+        t_err_str +=  '\tExpected: {}\n\tActual:   {}\n'.format(code_obj_expected.co_cellvars, code_obj_tested.co_cellvars)
+    else:
+        idxc = 0
+        # Compare all cellvar names to ensure equality
+        for name in code_obj_expected.co_cellvars:
+            if len(code_obj_tested.co_cellvars) < idxc + 1:
+                t_err_str +=  'Unable to compare cellvar name {}. Does not exist in the decompiled version\n'.format(constant)
+            elif name != code_obj_tested.co_cellvars[idxc]:
+                t_err_str +=  'Cellvar name: {} != {}\n'.format(name, code_obj_tested.co_cellvars[idxc])
+            idxc += 1
+    if t_err_str:
+        err_str += '{0}\n{1}\n{0}\n'.format('='*80, code_obj_expected.co_name) + t_err_str
+    a = format_dis_lines(code_obj_expected)
+    b = format_dis_lines(code_obj_tested)
+    d = list(difflib.unified_diff(a, b))
+
+    if any(d):
+        if err_str == '':
+            aa = list(map(remove_arg,a))
+            bb = list(map(remove_arg,b))
+            dd = list(difflib.unified_diff(aa, bb))
+            if not any(dd):
+                return err_str
+        err_str +=  '{0}\n{1}\n{0}\nEXPECTED:\n\t{2}\n{0}\nACTUAL:\n\t{3}\n{0}\nDIFF:\n\t{4}\n{0}\n'.format('='*80, code_obj_expected.co_name, str.join('\n\t', a), str.join('\n\t', b), str.join('\n\t', d))
+    return err_str
+ 
